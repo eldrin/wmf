@@ -102,7 +102,7 @@ def recompute_factors_bias(Y, S, lambda_reg, dtype='float32'):
     return X_new
 
 
-def recompute_factors_attr(Y, S, W, A, lambda_reg, dtype='float32'):
+def recompute_factors_attr(Y, S, W, A, lambda_a, lambda_reg, dtype='float32'):
     """
     recompute matrix X from Y.
     X = recompute_factors(Y, S, lambda_reg)
@@ -118,12 +118,12 @@ def recompute_factors_attr(Y, S, W, A, lambda_reg, dtype='float32'):
     YTYpI = YTY + lambda_reg * np.eye(f)
     X_new = np.zeros((m, f), dtype=dtype)
 
-    WTW = np.dot(W.T, W)
+    WTW = lambda_a * np.dot(W.T, W)
 
     for (k, s_u, i_u), (_, s_a, i_a) in zip(iter_rows(S), iter_rows(A)):
         Y_u = Y[i_u] # exploit sparsity
         W_u = W[i_a] # exploit sparsity for attributes
-        A = np.dot(s_u + 1, Y_u) + np.sum(W_u, axis=0)
+        A = np.dot(s_u + 1, Y_u) + lambda_a * np.sum(W_u, axis=0)
         YTSY = np.dot(Y_u.T, (Y_u * s_u.reshape(-1, 1)))
         B = YTSY + YTYpI + WTW
 
@@ -197,7 +197,8 @@ def factorize(S, num_factors, lambda_reg=1e-5, num_iterations=20, init_std=0.01,
     return U, V
 
 
-def cofactorize(S, A, num_factors, lambda_reg=1e-5, num_iterations=20, init_std=0.01, verbose=False, dtype='float32', recompute_factors=recompute_factors, *args, **kwargs):
+def cofactorize(S, A, num_factors, lambda_a=1, lambda_reg=1e-5, num_iterations=20, init_std=0.01, verbose=False,
+                dtype='float32', recompute_factors=recompute_factors, *args, **kwargs):
     """
     co-factorize a given main and auxiliary sparse matrix using
     the Weighted Matrix Factorization algorithm by Hu, Koren and Volinsky.
@@ -258,14 +259,14 @@ def cofactorize(S, A, num_factors, lambda_reg=1e-5, num_iterations=20, init_std=
             print "    time since start: %.3f seconds" % (time.time() - start_time)
             print "    recompute item factors V"
 
-        V = recompute_factors_attr(U, ST, W, AT, lambda_reg, dtype, *args, **kwargs)
+        V = recompute_factors_attr(U, ST, W, AT, lambda_a, lambda_reg, dtype, *args, **kwargs)
 
         if verbose:
             print "    time since start: %.3f seconds" % (time.time() - start_time)
             print "    recompute item factors W"
 
-        A_ = A.dot(V)
-        B_ = np.dot(V.T, V) - lambda_reg * np.eye(V.shape[1])
+        A_ = lambda_a * A.dot(V)
+        B_ = lambda_a * np.dot(V.T, V) + lambda_reg * np.eye(V.shape[1])
         W = np.linalg.solve(B_.T, A_.T).T
 
         if verbose:
