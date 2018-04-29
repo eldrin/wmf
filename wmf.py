@@ -108,7 +108,7 @@ def recompute_factors_attr(Y, S, W, A, lambda_a, lambda_reg, dtype='float32'):
     X = recompute_factors(Y, S, lambda_reg)
     This can also be used for the reverse operation as follows:
     Y = recompute_factors(X, ST, lambda_reg)
-    
+
     The comments are in terms of X being the users and Y being the items.
     """
     m = S.shape[0] # m = number of users
@@ -119,13 +119,80 @@ def recompute_factors_attr(Y, S, W, A, lambda_a, lambda_reg, dtype='float32'):
     X_new = np.zeros((m, f), dtype=dtype)
 
     WTW = lambda_a * np.dot(W.T, W)
+    UU_WW_pI = YTYpI + WTW
 
     for (k, s_u, i_u), (_, s_a, i_a) in zip(iter_rows(S), iter_rows(A)):
         Y_u = Y[i_u] # exploit sparsity
         W_u = W[i_a] # exploit sparsity for attributes
         A = np.dot(s_u + 1, Y_u) + lambda_a * np.sum(W_u, axis=0)
         YTSY = np.dot(Y_u.T, (Y_u * s_u.reshape(-1, 1)))
-        B = YTSY + YTYpI + WTW
+        B = YTSY + UU_WW_pI
+
+        # Binv = np.linalg.inv(B)
+        # X_new[k] = np.dot(A, Binv) 
+        X_new[k] = np.linalg.solve(B.T, A.T).T # doesn't seem to make much of a difference in terms of speed, but w/e
+
+    return X_new
+
+
+def recompute_factors_attr2w(Y, W, A, B, lambda_a, lambda_b, lambda_reg, dtype='float32'):
+    """
+    recompute matrix X from Y.
+    X = recompute_factors(Y, S, lambda_reg)
+    This can also be used for the reverse operation as follows:
+    Y = recompute_factors(X, ST, lambda_reg)
+
+    The comments are in terms of X being the users and Y being the items.
+    """
+    m = W.shape[0]
+    f = Y.shape[1] # f = number of factors
+
+    YTY = np.dot(Y.T, Y) # precompute this
+    YTYpI = lambda_a * YTY + lambda_reg * np.eye(f)
+    W_new = np.zeros((m, f), dtype=dtype)
+
+    WTW = lambda_b * np.dot(W.T, W)
+    VV_WW_pI = WTW + YTYpI
+
+    for (k, s_a, i_a), (_, s_b, i_b) in zip(iter_rows(A), iter_rows(B)):
+        Y_a = Y[i_a] # exploit sparsity
+        W_b = W[i_b] # exploit sparsity for attributes
+        A = lambda_b * np.dot(s_b + 1, W_b) + lambda_a * np.sum(Y_a, axis=0)
+        WTSW = np.dot(W_b.T, (W_b * s_b.reshape(-1, 1)))
+        B = VV_WW_pI + lambda_b * WTSW
+
+        # Binv = np.linalg.inv(B)
+        # X_new[k] = np.dot(A, Binv) 
+        W_new[k] = np.linalg.solve(B.T, A.T).T # doesn't seem to make much of a difference in terms of speed, but w/e
+
+    return W_new
+
+
+def recompute_factors_attr2v(Y, S, W, A, lambda_a, lambda_b, lambda_reg, dtype='float32'):
+    """
+    recompute matrix X from Y.
+    X = recompute_factors(Y, S, lambda_reg)
+    This can also be used for the reverse operation as follows:
+    Y = recompute_factors(X, ST, lambda_reg)
+
+    The comments are in terms of X being the users and Y being the items.
+    """
+    m = S.shape[0] # m = number of users
+    f = Y.shape[1] # f = number of factors
+
+    YTY = np.dot(Y.T, Y) # precompute this
+    YTYpI = YTY + lambda_reg * np.eye(f)
+    X_new = np.zeros((m, f), dtype=dtype)
+
+    WTW = lambda_a * np.dot(W.T, W)
+    VV_WW_pI = WTW + YTYpI
+
+    for (k, s_u, i_u), (_, s_a, i_a) in zip(iter_rows(S), iter_rows(A)):
+        Y_u = Y[i_u] # exploit sparsity
+        W_a = W[i_a] # exploit sparsity
+        A = np.dot(s_u + 1, Y_u) + lambda_a * np.sum(W_a, axis=0)
+        YTSY = np.dot(Y_u.T, (Y_u * s_u.reshape(-1, 1)))
+        B = VV_WW_pI + YTSY
 
         # Binv = np.linalg.inv(B)
         # X_new[k] = np.dot(A, Binv) 
@@ -268,6 +335,84 @@ def cofactorize(S, A, num_factors, lambda_a=1, lambda_reg=1e-5, num_iterations=2
         A_ = lambda_a * A.dot(V)
         B_ = lambda_a * np.dot(V.T, V) + lambda_reg * np.eye(V.shape[1])
         W = np.linalg.solve(B_.T, A_.T).T
+
+        if verbose:
+            print "    time since start: %.3f seconds" % (time.time() - start_time)
+
+    return U, V, W
+
+
+def cofactorize2(S, A, B, num_factors, lambda_a=1, lambda_b=1, lambda_reg=1e-5, num_iterations=20, init_std=0.1,
+                 verbose=False, dtype='float32', recompute_factors=recompute_factors, *args, **kwargs):
+    """
+    co-factorize a given main and auxiliary sparse matrix using
+    the Weighted Matrix Factorization algorithm by Hu, Koren and Volinsky.
+
+    S: 'surplus' confidence matrix, i.e. C - I where C is the matrix with confidence weights.
+        S is sparse while C is not (and the sparsity pattern of S is the same as that of
+        the preference matrix, so it doesn't need to be specified separately).
+
+    A: auxiliary sparse matrix for attribute for items,
+       i.e. artist-track mapping for user-track mapping S
+
+    num_factors: the number of factors.
+
+    lambda_reg: the value of the regularization constant.
+
+    num_iterations: the number of iterations to run the algorithm for. Each iteration consists
+        of two steps, one to recompute U given V, and one to recompute V given U.
+
+    init_std: the standard deviation of the Gaussian with which V is initialized.
+
+    verbose: print a bunch of stuff during training, including timing information.
+
+    dtype: the dtype of the resulting factor matrices. Using single precision is recommended,
+        it speeds things up a bit.
+
+    recompute_factors: helper function that implements the inner loop.
+
+    returns:
+        U, V: factor matrices. If bias=True, the last columns of the matrices contain the biases.
+    """
+    num_users, num_items = S.shape
+    num_attrs, _ = A.shape
+
+    if verbose:
+        print "precompute transpose"
+        start_time = time.time()
+
+    ST = S.T.tocsr()
+    AT = A.T.tocsr()
+    A = A.tocsr()
+    B = B.tocsr()
+
+    if verbose:
+        print "  took %.3f seconds" % (time.time() - start_time)
+        print "run ALS algorithm"
+        start_time = time.time()
+
+    U = None # no need to initialize U, it will be overwritten anyway
+    V = np.random.randn(num_items, num_factors).astype(dtype) * init_std
+    W = np.random.randn(num_attrs, num_factors).astype(dtype) * init_std
+
+    for i in xrange(num_iterations):
+        if verbose:
+            print "  iteration %d" % i
+            print "    recompute user factors U"
+
+        U = recompute_factors(V, S, lambda_reg, dtype, *args, **kwargs)
+
+        if verbose:
+            print "    time since start: %.3f seconds" % (time.time() - start_time)
+            print "    recompute item factors V"
+
+        V = recompute_factors_attr2v(U, ST, W, AT, lambda_a, lambda_b, lambda_reg, dtype, *args, **kwargs)
+
+        if verbose:
+            print "    time since start: %.3f seconds" % (time.time() - start_time)
+            print "    recompute item factors W"
+
+        W = recompute_factors_attr2w(V, W, A, B, lambda_a, lambda_b, lambda_reg, dtype, *args, **kwargs)
 
         if verbose:
             print "    time since start: %.3f seconds" % (time.time() - start_time)
