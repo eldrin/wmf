@@ -1,7 +1,7 @@
 import numpy as np
 import time
 import itertools
-
+from tqdm import tqdm
 
 
 def linear_surplus_confidence_matrix(B, alpha):
@@ -21,13 +21,19 @@ def log_surplus_confidence_matrix(B, alpha, epsilon):
 
 
 
-def iter_rows(S):
+def iter_rows(S, verbose=True):
     """
     Helper function to iterate quickly over the data and indices of the
     rows of the S matrix. A naive implementation using indexing
     on S is much, much slower.
     """
-    for i in xrange(S.shape[0]):
+    it_ = xrange(S.shape[0])
+    if verbose:
+        it = tqdm(it_, total=S.shape[0], ncols=80)
+    else:
+        it = it_
+
+    for i in it:
         lo, hi = S.indptr[i], S.indptr[i + 1]
         yield i, S.data[lo:hi], S.indices[lo:hi]
 
@@ -121,7 +127,7 @@ def recompute_factors_attr(Y, S, W, A, lambda_a, lambda_reg, dtype='float32'):
     WTW = lambda_a * np.dot(W.T, W)
     UU_WW_pI = YTYpI + WTW
 
-    for (k, s_u, i_u), (_, s_a, i_a) in zip(iter_rows(S), iter_rows(A)):
+    for (k, s_u, i_u), (_, s_a, i_a) in zip(iter_rows(S), iter_rows(A, False)):
         Y_u = Y[i_u] # exploit sparsity
         W_u = W[i_a] # exploit sparsity for attributes
         A = np.dot(s_u + 1, Y_u) + lambda_a * np.sum(W_u, axis=0)
@@ -154,7 +160,7 @@ def recompute_factors_attr2w(Y, W, A, B, lambda_a, lambda_b, lambda_reg, dtype='
     WTW = lambda_b * np.dot(W.T, W)
     VV_WW_pI = WTW + YTYpI
 
-    for (k, s_a, i_a), (_, s_b, i_b) in zip(iter_rows(A), iter_rows(B)):
+    for (k, s_a, i_a), (_, s_b, i_b) in zip(iter_rows(A), iter_rows(B, False)):
         Y_a = Y[i_a] # exploit sparsity
         W_b = W[i_b] # exploit sparsity for attributes
         A = lambda_b * np.dot(s_b + 1, W_b) + lambda_a * np.sum(Y_a, axis=0)
@@ -187,7 +193,7 @@ def recompute_factors_attr2v(Y, S, W, A, lambda_a, lambda_b, lambda_reg, dtype='
     WTW = lambda_a * np.dot(W.T, W)
     VV_WW_pI = WTW + YTYpI
 
-    for (k, s_u, i_u), (_, s_a, i_a) in zip(iter_rows(S), iter_rows(A)):
+    for (k, s_u, i_u), (_, s_a, i_a) in zip(iter_rows(S), iter_rows(A, False)):
         Y_u = Y[i_u] # exploit sparsity
         W_a = W[i_a] # exploit sparsity
         A = np.dot(s_u + 1, Y_u) + lambda_a * np.sum(W_a, axis=0)
